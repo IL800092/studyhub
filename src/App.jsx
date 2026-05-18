@@ -194,13 +194,109 @@ const daysDiff = d => !d?null:Math.ceil((new Date(d)-new Date())/86400000);
 const fmtDate = d => { if(!d)return"—"; const dt=new Date(d+"T12:00:00"); return dt.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}); };
 
 /* ─── AI ─── */
-async function aiTodo(p){
-  const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:300,messages:[{role:"user",content:`Create a study/school to-do for: "${p}". Return ONLY raw JSON:\n{"name":string,"subject":"Math"|"Chemistry"|"Physics"|"English"|"Computer Science"|"Music"|"AP Statistics"|"Other","date":"YYYY-MM-DD or empty","priority":"High"|"Medium"|"Low","notes":string}`}]})});
-  const d=await r.json();const t=(d.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("");return JSON.parse(t.replace(/```json|```/g,"").trim());
+function aiTodo(p){
+  const lower = p.toLowerCase();
+  const SUBJECT_MAP = [
+    {keys:["physics","sph"],                         val:"Physics"},
+    {keys:["chem","chemistry","sch"],                val:"Chemistry"},
+    {keys:["math","mhf","calculus","functions"],     val:"Math"},
+    {keys:["english","essay","eng"],                 val:"English"},
+    {keys:["computer","cs","coding","programming"],  val:"Computer Science"},
+    {keys:["music","theory"],                        val:"Music"},
+    {keys:["stats","statistics"],                    val:"AP Statistics"},
+  ];
+  let subject = "Other";
+  for (const {keys, val} of SUBJECT_MAP) {
+    if (keys.some(k => lower.includes(k))) { subject = val; break; }
+  }
+
+  // Priority
+  let priority = "Medium";
+  if (/urgent|asap|tonight|today|due tomorrow|high/i.test(p)) priority = "High";
+  else if (/low|whenever|eventually|sometime/i.test(p)) priority = "Low";
+  else if (/test|exam|final|summative/i.test(p)) priority = "High";
+
+  // Date extraction
+  let date = "";
+  const days = {monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6,sunday:0,
+    mon:1,tue:2,wed:3,thu:4,fri:5,sat:6,sun:0,
+    today:null,tomorrow:null};
+  const now = new Date();
+  if (/today/i.test(p)) {
+    date = now.toISOString().split("T")[0];
+  } else if (/tomorrow/i.test(p)) {
+    const d = new Date(now); d.setDate(d.getDate()+1);
+    date = d.toISOString().split("T")[0];
+  } else {
+    for (const [day, num] of Object.entries(days)) {
+      if (lower.includes(day) && num !== null) {
+        const d = new Date(now);
+        const diff = (num - d.getDay() + 7) % 7 || 7;
+        d.setDate(d.getDate() + diff);
+        date = d.toISOString().split("T")[0];
+        break;
+      }
+    }
+  }
+
+  const name = p.charAt(0).toUpperCase() + p.slice(1);
+  return Promise.resolve({name, subject, date, priority, notes:""});
 }
-async function aiEdsby(raw){
-  const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:`Academic filter for Bayview Glen student. Extract ONLY real academic items (tests/quizzes/assignments/labs/projects). EXCLUDE therapy dogs, spirit days, social events, announcements. Return ONLY raw JSON array:\n[{"name":string,"subject":"Math"|"Chemistry"|"Physics"|"English"|"Computer Science"|"Music"|"AP Statistics"|"Other","date":"YYYY-MM-DD or empty"}]\n\n${raw}`}]})});
-  const d=await r.json();const t=(d.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("");return JSON.parse(t.replace(/```json|```/g,"").trim());
+function aiEdsby(raw){
+  const SUBJECTS = ["Physics","Chemistry","Music","English","Advanced Functions","Computer Science","AP Statistics"];
+  const SUBJ_NORM = {"Advanced Functions":"Math"};
+  const EXCLUDE = ["therapy dog","spirit day","frisbee","university visit","us gym","student experience",
+    "waterloo","club","trip","assembly","pizza","bbq","food drive","photo","prom","talent","tbd finals"];
+  const ACADEMIC = ["test","quiz","isp","exam","summative","due","lab","essay","report",
+    "correction","challenge","lesson","final","assignment","playground","presentation","project"];
+  const MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec";
+
+  const items = [], seen = new Set();
+  const subjPat = new RegExp(`(?=${SUBJECTS.map(s=>s.replace(/ /g,'\\s')).join('|')})`, 'gi');
+  const blocks = raw.split(subjPat);
+
+  for (let block of blocks) {
+    if (!block.trim()) continue;
+    const lower = block.toLowerCase();
+    if (EXCLUDE.some(ex => lower.includes(ex))) continue;
+    if (!ACADEMIC.some(ac => lower.includes(ac))) continue;
+
+    // Detect & strip subject from start
+    let subj = "Other";
+    for (const s of SUBJECTS) {
+      if (block.startsWith(s)) {
+        subj = SUBJ_NORM[s] || s;
+        block = block.slice(s.length);
+        // Strip echoed subject name if it repeats
+        if (block.startsWith(s)) block = block.slice(s.length);
+        break;
+      }
+    }
+
+    // Extract name: strip type prefix, cut at date or "Created by" or "Due:"
+    let name = block.replace(/^(Final Summative:|Test:|Assignment:|Lab:|Quiz:|ISP\s*)/i, '');
+    name = name.split(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d/i)[0];
+    name = name.split(/Due:/i)[0];
+    name = name.split(/Created by:/i)[0];
+    name = name.replace(/\d+:\d+\s*(?:am|pm)/gi, '').trim().replace(/[.,:\s]+$/, '');
+
+    // Extract date
+    let date = "";
+    const dueM = block.match(/Due:\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})/i);
+    const dateM = block.match(/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})/i);
+    const rawDate = (dueM ? dueM[1] : dateM ? dateM[1] : "").trim();
+    if (rawDate) {
+      const parsed = new Date(rawDate);
+      if (!isNaN(parsed)) date = parsed.toISOString().split("T")[0];
+    }
+
+    const key = name.toLowerCase().slice(0, 30);
+    if (name && name.length > 2 && !seen.has(key)) {
+      seen.add(key);
+      items.push({name, subject: subj, date});
+    }
+  }
+  return Promise.resolve(items);
 }
 
 /* ─── DONUT ─── */
@@ -673,11 +769,11 @@ export default function App(){
             <div style={{background:"#060d1e",borderRadius:9,padding:13,marginBottom:12,fontSize:12,color:"#3d5270",fontFamily:"'Fira Code',monospace",lineHeight:1.9,border:"1px solid #0d1b33"}}>
               <span style={{color:"#3b82f6"}}>1</span> → Log into bayviewglen.edsby.com<br/>
               <span style={{color:"#3b82f6"}}>2</span> → Assessments page → Ctrl+A → Ctrl+C<br/>
-              <span style={{color:"#22c55e"}}>✓</span> AI removes therapy dogs, spirit days automatically
+              <span style={{color:"#22c55e"}}>✓</span> Auto-filters therapy dogs, spirit days, social events
             </div>
             <textarea style={{...inp,width:"100%",height:120,resize:"vertical",fontFamily:"monospace",fontSize:12}} placeholder="Paste Edsby content…" value={eText} onChange={e=>setEText(e.target.value)}/>
             <div style={{display:"flex",gap:8,marginTop:10}}>
-              <button style={btn(eLoad?"#1e3a8a":"#3b82f6")} onClick={importEdsby} disabled={eLoad}>{eLoad?"⏳ Filtering…":"⚡ Import with AI"}</button>
+              <button style={btn(eLoad?"#1e3a8a":"#3b82f6")} onClick={importEdsby} disabled={eLoad}>{eLoad?"⏳ Parsing…":"⚡ Import from Edsby"}</button>
               <button style={btn("#0b1425","#475569")} onClick={()=>setShowEdsby(false)}>Cancel</button>
             </div>
           </div>}
@@ -701,10 +797,10 @@ export default function App(){
 
           {/* AI quick add */}
           <div style={{...cardS,padding:16,marginBottom:16,border:"1px solid #1d4ed81a"}}>
-            <div style={{fontSize:10,color:"#253554",fontWeight:800,letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Quick Add with AI</div>
+            <div style={{fontSize:10,color:"#253554",fontWeight:800,letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Quick Add</div>
             <div style={{display:"flex",gap:8}}>
               <input style={{...inp,flex:1}} placeholder="e.g. 'study for chemistry test Thursday' or 'soccer practice tomorrow'" value={tInput} onChange={e=>setTInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTAI()}/>
-              <button style={btn(tLoad?"#1e3a8a":"#3b82f6")} onClick={addTAI} disabled={tLoad}>{tLoad?"⏳":"⚡ Add"}</button>
+              <button style={btn(tLoad?"#1e3a8a":"#3b82f6")} onClick={addTAI} disabled={tLoad}>{tLoad?"⏳":"+ Add"}</button>
             </div>
           </div>
 
@@ -778,7 +874,7 @@ export default function App(){
         {/* ══ EDSBY ══ */}
         {tab==="edsby"&&<>
           <div style={{fontSize:24,fontWeight:900,color:"#f1f5f9",letterSpacing:-.5,marginBottom:3}}>Edsby Import</div>
-          <div style={{fontSize:12,color:"#253554",marginBottom:22}}>AI-powered academic filter — goes straight to your Assessment Tracker</div>
+          <div style={{fontSize:12,color:"#253554",marginBottom:22}}>Smart filter — extracts only real academic items</div>
           <div style={{...cardS,padding:26,maxWidth:660}}>
             <div style={{background:"#060d1e",borderRadius:10,padding:14,marginBottom:18,fontSize:12,color:"#3d5270",fontFamily:"'Fira Code',monospace",lineHeight:2,border:"1px solid #0d1b33"}}>
               <span style={{color:"#3b82f6"}}>1</span> → Open bayviewglen.edsby.com and log in<br/>
@@ -789,7 +885,7 @@ export default function App(){
             </div>
             <textarea style={{...inp,width:"100%",height:200,resize:"vertical",fontFamily:"monospace",fontSize:12,lineHeight:1.6}} placeholder="Paste Edsby page text here…" value={eText} onChange={e=>setEText(e.target.value)}/>
             <button style={{...btn(eLoad?"#1e3a8a":"#3b82f6"),marginTop:12,width:"100%",padding:"12px 0",fontSize:14}} onClick={importEdsby} disabled={eLoad}>
-              {eLoad?"⏳ AI filtering…":"⚡ Import with AI → Assessment Tracker"}
+              {eLoad?"⏳ AI filtering…":"⚡ Import from Edsby → Assessment Tracker"}
             </button>
           </div>
         </>}
