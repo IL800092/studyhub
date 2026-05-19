@@ -249,10 +249,36 @@ function aiEdsby(raw){
     "waterloo","club","trip","assembly","pizza","bbq","food drive","photo","prom","talent","tbd finals"];
   const ACADEMIC = ["test","quiz","isp","exam","summative","due","lab","essay","report",
     "correction","challenge","lesson","final","assignment","playground","presentation","project"];
-  const MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec";
 
   const items = [], seen = new Set();
-  const subjPat = new RegExp(`(?=${SUBJECTS.map(s=>s.replace(/ /g,'\\s')).join('|')})`, 'gi');
+  const MO = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)";
+
+  // Try to parse a date string into YYYY-MM-DD, returns "" on failure
+  const parseDate = (s) => {
+    if (!s) return "";
+    // Try various formats
+    // "May 21, 2026" or "May 21 2026"
+    let m = s.match(new RegExp(`(${MO})\s+(\d{1,2}),?\s*(\d{4})`, 'i'));
+    if (m) { const d = new Date(`${m[1]} ${m[2]} ${m[3]}`); if (!isNaN(d)) return d.toISOString().split("T")[0]; }
+    // "2026-05-21"
+    m = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return s.slice(0,10);
+    // "21/05/2026" or "05/21/2026"
+    m = s.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) { const d = new Date(`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`); if (!isNaN(d)) return d.toISOString().split("T")[0]; }
+    // "Thu 21" or "Mon 25" — relative day with no year, use current year/month  
+    m = s.match(/(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})$/i);
+    if (m) {
+      const now = new Date(); const day = parseInt(m[1]);
+      const d = new Date(now.getFullYear(), now.getMonth(), day);
+      // If day has passed this month, try next month
+      if (d < now) d.setMonth(d.getMonth()+1);
+      return d.toISOString().split("T")[0];
+    }
+    return "";
+  };
+
+  const subjPat = new RegExp("(?=" + SUBJECTS.map(s=>s.replace(/ /g,"\\s+")).join("|") + ")", "gi");
   const blocks = raw.split(subjPat);
 
   for (let block of blocks) {
@@ -261,36 +287,33 @@ function aiEdsby(raw){
     if (EXCLUDE.some(ex => lower.includes(ex))) continue;
     if (!ACADEMIC.some(ac => lower.includes(ac))) continue;
 
-    // Detect & strip subject from start
+    // Detect & strip subject
     let subj = "Other";
     for (const s of SUBJECTS) {
-      if (block.startsWith(s)) {
+      const re = new RegExp("^" + s.replace(/ /g,"\\s+"), "i");
+      if (re.test(block)) {
         subj = SUBJ_NORM[s] || s;
-        block = block.slice(s.length);
-        // Strip echoed subject name if it repeats
-        if (block.startsWith(s)) block = block.slice(s.length);
+        block = block.replace(re, "").replace(re, ""); // strip up to 2 echoes
         break;
       }
     }
 
-    // Extract name: strip type prefix, cut at date or "Created by" or "Due:"
-    let name = block.replace(/^(Final Summative:|Test:|Assignment:|Lab:|Quiz:|ISP\s*)/i, '');
-    name = name.split(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d/i)[0];
-    name = name.split(/Due:/i)[0];
+    // Extract name
+    let name = block.replace(/^(Final Summative:|Test:|Assignment:|Lab:|Quiz:)\s*/i, '').trim();
+    name = name.split(new RegExp(`${MO}\s+\d`, 'i'))[0];
+    name = name.split(/Due:/i)[0];
     name = name.split(/Created by:/i)[0];
-    name = name.replace(/\d+:\d+\s*(?:am|pm)/gi, '').trim().replace(/[.,:\s]+$/, '');
+    name = name.replace(/\d{1,2}:\d{2}\s*(?:am|pm)/gi, '').trim().replace(/[\s.,:\-]+$/, '');
 
-    // Extract date
+    // Extract date — prefer "Due: ..." then any full date, then relative "Day NN"
     let date = "";
-    const dueM = block.match(/Due:\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})/i);
-    const dateM = block.match(/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})/i);
-    const rawDate = (dueM ? dueM[1] : dateM ? dateM[1] : "").trim();
-    if (rawDate) {
-      const parsed = new Date(rawDate);
-      if (!isNaN(parsed)) date = parsed.toISOString().split("T")[0];
-    }
+    const dueM  = block.match(new RegExp("Due:\s*(" + MO + "\s+\d{1,2},?\s*\d{4})", "i"));
+    const fullM  = block.match(new RegExp("(" + MO + "\s+\d{1,2},?\s*\d{4})", "i"));
+    const isoM   = block.match(/(\d{4}-\d{2}-\d{2})/);
+    const relM   = block.match(/((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2})/i);
+    date = parseDate(dueM?.[1]) || parseDate(fullM?.[1]) || parseDate(isoM?.[1]) || parseDate(relM?.[1]) || "";
 
-    const key = name.toLowerCase().slice(0, 30);
+    const key = name.toLowerCase().slice(0, 35);
     if (name && name.length > 2 && !seen.has(key)) {
       seen.add(key);
       items.push({name, subject: subj, date});
