@@ -417,7 +417,10 @@ function SubjectTag({subject, size="sm"}){
   const color = SUBJECTS_MAP[subject]||"#64748b";
   const pad = size==="sm"?"2px 10px":"3px 12px";
   const fs  = size==="sm"?11:12;
-  return <span style={{background:color,color:"#fff",borderRadius:5,padding:pad,fontSize:fs,fontWeight:700,whiteSpace:"nowrap"}}>{subject}</span>;
+  // Use dark text on bright backgrounds (yellow, cyan, amber, light green, pink)
+  const DARK_TEXT = ["#FFFF00","#33CCFF","#FFCC66","#A8D08D","#FF7C80","#CC66FF"];
+  const textColor = DARK_TEXT.includes(color) ? "#1a1a1a" : "#fff";
+  return <span style={{background:color,color:textColor,borderRadius:5,padding:pad,fontSize:fs,fontWeight:800,whiteSpace:"nowrap"}}>{subject}</span>;
 }
 
 /* ─── STATUS CHECKBOX (multi-check like Notion) ─── */
