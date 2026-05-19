@@ -322,6 +322,86 @@ function aiEdsby(raw){
   return Promise.resolve(items);
 }
 
+/* ─── QUICK ADD PARSER ─── */
+function quickParseAssessment(text){
+  const lower = text.toLowerCase();
+  const MO = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+
+  // Subject detection
+  const SUBJ_MAP = [
+    {keys:["physics","sph","landau"],                          val:"Physics"},
+    {keys:["chem","chemistry","sch","russell"],                val:"Chemistry"},
+    {keys:["math","mhf","calculus","functions","mcarthur"],    val:"Math"},
+    {keys:["english","eng","essay","gray","shakespeare","isp essay"], val:"English"},
+    {keys:["compsci","cs","computer","ics","coding","program"],val:"Computer Science"},
+    {keys:["music","theory","bellissimo","lesson"],            val:"Music"},
+    {keys:["stats","statistics","ap stat","ap stats"],         val:"AP Statistics"},
+  ];
+  let subject = "Other";
+  for (const {keys,val} of SUBJ_MAP) {
+    if (keys.some(k=>lower.includes(k))) { subject=val; break; }
+  }
+
+  // Date detection — try many formats
+  let date = "";
+  const now = new Date();
+  const DAY_MAP = {mon:1,tue:2,wed:3,thu:4,fri:5,sat:6,sun:0,
+    monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6,sunday:0};
+
+  // "May 21" or "May 21, 2026" or "May 21 2026"
+  const fullDateRx = new RegExp(`(${MO})\\s+(\\d{1,2})(?:,?\\s*(\\d{4}))?`, 'i');
+  const fdm = text.match(fullDateRx);
+  if (fdm) {
+    const yr = fdm[3] || now.getFullYear();
+    const d = new Date(`${fdm[1]} ${fdm[2]} ${yr}`);
+    if (!isNaN(d)) { if (!fdm[3] && d < now) d.setFullYear(d.getFullYear()+1); date = d.toISOString().split("T")[0]; }
+  }
+
+  // "tomorrow", "today", "next monday", "this friday", "thursday"
+  if (!date) {
+    if (/\btoday\b/i.test(text)) date = now.toISOString().split("T")[0];
+    else if (/\btomorrow\b/i.test(text)) { const d=new Date(now);d.setDate(d.getDate()+1);date=d.toISOString().split("T")[0]; }
+    else {
+      const nextMatch = text.match(/\b(?:next\s+|this\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b/i);
+      if (nextMatch) {
+        const target = DAY_MAP[nextMatch[1].toLowerCase()];
+        const d = new Date(now);
+        const isNext = /\bnext\b/i.test(text);
+        let diff = (target - d.getDay() + 7) % 7 || 7;
+        if (isNext) diff = diff === 7 ? 7 : diff + 7;
+        d.setDate(d.getDate() + diff);
+        date = d.toISOString().split("T")[0];
+      }
+    }
+    // "in X days/weeks"
+    if (!date) {
+      const inMatch = text.match(/\bin\s+(\d+)\s+(day|week)/i);
+      if (inMatch) {
+        const d=new Date(now);
+        d.setDate(d.getDate() + parseInt(inMatch[1]) * (inMatch[2].startsWith('w')?7:1));
+        date=d.toISOString().split("T")[0];
+      }
+    }
+  }
+
+  // Name cleanup — strip date phrases, subject words, filler
+  let name = text;
+  // Remove date phrases
+  name = name.replace(fullDateRx,'').replace(/\b(today|tomorrow|next\s+\w+|this\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b/gi,'');
+  name = name.replace(/\bin\s+\d+\s+(?:days?|weeks?)\b/gi,'');
+  // Remove subject keywords  
+  const allKeys = ["physics","chemistry","chem","math","mhf","english","computer science","compsci","music","ap statistics","ap stats","stats"];
+  allKeys.forEach(k=>{ name = name.replace(new RegExp("\\b"+k+"\\b","gi"),''); });
+  // Remove common filler words
+  name = name.replace(/\b(i have a?|there is a?|got a?|my|for|on|due|is|the|an?|gonna|have to|need to|doing|do|got|get)\b/gi,' ');
+  name = name.replace(/[,;]+/g,' ').replace(/\s+/g,' ').trim();
+  // Capitalize first letter
+  if (name) name = name.charAt(0).toUpperCase() + name.slice(1);
+  if (!name || name.length < 2) name = text.charAt(0).toUpperCase() + text.slice(1,60);
+
+  return { name, subject, date, done:false, obtained:"", possible:"", notes:"" };
+}
+
 /* ─── DONUT ─── */
 function Donut({pct,color,size=80}){
   const r=(size-8)/2,c=2*Math.PI*r,dash=Math.min(pct||0,100)/100*c;
@@ -617,6 +697,8 @@ export default function App(){
   const [fSubject,setFSubject]=useState("All");
   const [fDone,setFDone]=useState("All"); // All | Done | Pending
   const [showEdsby,setShowEdsby]=useState(false);
+  const [qaText,setQaText]=useState("");
+  const [qaPreview,setQaPreview]=useState(null);
   const [eText,setEText]=useState("");
   const [eLoad,setELoad]=useState(false);
 
@@ -772,10 +854,28 @@ export default function App(){
         {/* ══ ASSESSMENTS ══ */}
         {tab==="assessments"&&<>
           <div style={{fontSize:24,fontWeight:900,color:"#f1f5f9",letterSpacing:-.5,marginBottom:3}}>Assessment Tracker</div>
-          <div style={{fontSize:12,color:"#253554",marginBottom:20}}>Double-click any cell to edit · Drag ⠿ to reorder · Check ✓ when done</div>
+          <div style={{fontSize:12,color:"#253554",marginBottom:16}}>Double-click any cell to edit · Drag ⠿ to reorder · Check ✓ when done</div>
+
+          {/* Quick Add */}
+          <div style={{...cardS,padding:16,marginBottom:14,border:"1px solid #1d4ed81a"}}>
+            <div style={{fontSize:10,color:"#253554",fontWeight:800,letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Quick Add</div>
+            <div style={{display:"flex",gap:8}}>
+              <input style={{...inp,flex:1}} placeholder="e.g. 'physics test next thursday' or 'chemistry isp due may 25' or 'english essay friday'"
+                value={qaText} onChange={e=>{setQaText(e.target.value);setQaPreview(e.target.value.trim()?quickParseAssessment(e.target.value):null);}}
+                onKeyDown={e=>{if(e.key==="Enter"&&qaText.trim()){const p=quickParseAssessment(qaText);setAssessments(prev=>[{id:Date.now(),...p},...prev]);setQaText("");setQaPreview(null);notify("✓ Assessment added");}}}/>
+              <button style={btn()} onClick={()=>{if(!qaText.trim())return;const p=quickParseAssessment(qaText);setAssessments(prev=>[{id:Date.now(),...p},...prev]);setQaText("");setQaPreview(null);notify("✓ Assessment added");}}>+ Add</button>
+            </div>
+            {qaPreview&&<div style={{display:"flex",gap:10,marginTop:10,flexWrap:"wrap",alignItems:"center",padding:"8px 12px",background:"#040b18",borderRadius:8,border:"1px solid #0f1e38"}}>
+              <span style={{fontSize:11,color:"#253554",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Preview:</span>
+              <span style={{fontSize:12,color:"#f1f5f9",fontWeight:600}}>{qaPreview.name}</span>
+              {qaPreview.subject!=="Other"&&<SubjectTag subject={qaPreview.subject} size="sm"/>}
+              {qaPreview.date&&<span style={{fontSize:11,color:"#3b82f6"}}>📅 {qaPreview.date}</span>}
+              {!qaPreview.date&&<span style={{fontSize:11,color:"#334155",fontStyle:"italic"}}>no date detected</span>}
+            </div>}
+          </div>
 
           {/* Filter bar */}
-          <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
+          <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
             <select style={selS} value={fSubject} onChange={e=>setFSubject(e.target.value)}>
               <option>All</option>{SUBJECT_KEYS.map(s=><option key={s}>{s}</option>)}
             </select>
