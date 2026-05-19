@@ -486,15 +486,15 @@ function NotionTable({rows, onUpdateRow, onDeleteRow, onReorder, columns, addRow
         <button onClick={onAddRow} style={{background:"#1d4ed8",color:"#fff",border:"none",borderRadius:7,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>+ New</button>
       </div>
       {/* Header */}
-      <div style={{display:"grid",gridTemplateColumns:columns.map(c=>c.width||"1fr").join(" "),background:"#040b14",borderBottom:"1px solid #0a1525",padding:"0 8px"}}>
-        <div style={{width:28}}/>
-        <div style={{width:28}}/>
+      <div style={{display:"grid",gridTemplateColumns:["28px","28px",...columns.map(c=>c.width||"1fr"),"32px"].join(" "),background:"#040b14",borderBottom:"1px solid #0a1525",padding:"0 8px"}}>
+        <div/>
+        <div style={{padding:"8px 6px",fontSize:10,fontWeight:800,color:"#253554",letterSpacing:2,textTransform:"uppercase"}}>✓</div>
         {columns.map(c=>(
           <div key={c.key} style={{padding:"8px 10px",fontSize:10,fontWeight:800,color:"#253554",letterSpacing:2,textTransform:"uppercase",display:"flex",alignItems:"center",gap:5}}>
             {c.icon&&<span style={{fontSize:12}}>{c.icon}</span>}{c.label}
           </div>
         ))}
-        <div style={{width:32}}/>
+        <div/>
       </div>
       {/* Rows */}
       {rows.length===0&&<div style={{padding:"32px",textAlign:"center",color:"#1e3a5f",fontSize:13}}>No items — click + New to add one</div>}
